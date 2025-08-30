@@ -6,8 +6,10 @@ import re
 import re as _re
 
 # === Model Routing Constants ===
-MAX_CHAT_HISTORY = 20  # Number of messages to keep in context
-MODEL_MEDIUM_TIER_THRESHOLD = 7
+MAX_CHAT_HISTORY = 20            # Number of messages to keep in context
+MODEL_MEDIUM_TIER_THRESHOLD = 5  # Threshold for gemini-2.5-flash
+MODEL_TOP_TIER_THRESHOLD = 10    # Threshold for gemini-2.5-pro
+TOKEN_THRESHOLD_PRO = 3000       # Token threshold for using pro model
 WEIGHT_SMALL = 2
 WEIGHT_MEDIUM = 3
 WEIGHT_HARD = 5
@@ -29,8 +31,10 @@ MEDIUM_PATTERN = re.compile("|".join(MEDIUM_KEYWORDS), re.IGNORECASE)
 
 # === Helper Functions ===
 def select_model(content: str, conversation_history: list) -> str:
-    """Select Gemini model based on weighted content complexity."""
+    """Select Gemini model based on weighted content complexity and token count."""
     score = 1  # Start with a base score of 1
+    
+    # Calculate complexity score
     # Hard keywords: +5 each
     score += WEIGHT_HARD * len(HARD_PATTERN.findall(content))
     # Medium keywords: +3 each
@@ -38,35 +42,74 @@ def select_model(content: str, conversation_history: list) -> str:
     # Question marks: +2 each
     score += WEIGHT_SMALL * content.count('?')
     
-    if score >= MODEL_MEDIUM_TIER_THRESHOLD:
-        return "gemini-2.5-flash"
+    # Estimate token count for conversation context
+    token_count = 0
+    try:
+        if conversation_history and len(conversation_history) > 0:
+            # Build conversation prompt for token estimation
+            prompt = ""
+            # Use recent history for token counting (limit to avoid huge contexts)
+            recent_history = conversation_history[-MAX_CHAT_HISTORY:]
+            for msg in recent_history:
+                prompt += f"{msg['role']}: {msg['content']}\n"
+            
+            # Add current message to the prompt for accurate estimation
+            prompt += f"user: {content}\n"
+            
+            # Use the client from session state to count tokens
+            if hasattr(st.session_state, 'genai_client') and st.session_state.genai_client:
+                try:
+                    estimated_token = st.session_state.genai_client.models.count_tokens(
+                        model="gemini-2.5-flash-lite", 
+                        contents=prompt
+                    )
+                    token_count = estimated_token.total_tokens if hasattr(estimated_token, 'total_tokens') else int(estimated_token)
+                except Exception as e:
+                    # Fallback: rough estimation if API call fails
+                    # Approximate: 1 token ≈ 4 characters for English text
+                    token_count = len(prompt) // 4
+                    st.warning(f"Token estimation failed, using approximation: {token_count} tokens")
+            else:
+                # Fallback estimation when client not available
+                token_count = len(prompt) // 4
+        else:
+            # For first message, just estimate current content
+            token_count = len(content) // 4
+            
+    except Exception as e:
+        # Fallback to character-based estimation
+        total_text = content
+        if conversation_history:
+            for msg in conversation_history[-5:]:  # Last 5 messages for safety
+                total_text += msg.get('content', '')
+        token_count = len(total_text) // 4
+    
+    # Enhanced model selection with token consideration:
+    # 1. gemini-2.5-pro: For really hard problems OR long conversations
+    # 2. gemini-2.5-flash: For medium complexity
+    # 3. gemini-2.5-flash-lite: For simple queries and short conversations
+    
+    if score >= MODEL_TOP_TIER_THRESHOLD or token_count > TOKEN_THRESHOLD_PRO:
+        return "gemini-2.5-pro"        # Most capable model for complex/long contexts
+    elif score >= MODEL_MEDIUM_TIER_THRESHOLD:
+        return "gemini-2.5-flash"      # Balanced model for medium complexity
     else:
-        return "gemini-2.5-flash-lite"
+        return "gemini-2.5-flash-lite"  # Fastest model for simple queries
 
 def wrap_code_blocks(text):
-    """Wrap code blocks in proper formatting."""
+    """Process code blocks for Streamlit display - keep markdown formatting intact."""
     if not isinstance(text, str):
         text = str(text) if text is not None else ""
-    # Handle triple backtick code blocks (with or without language)
-    text = _re.sub(r"```([a-zA-Z0-9]*)\n([\s\S]*?)```", lambda m: f"{m.group(2).strip()}", text)
-    # Handle indented code blocks (4 spaces or tab)
-    lines = text.split('\n')
-    in_code = False
-    code_lines = []
-    result_lines = []
-    for line in lines:
-        if (line.startswith('    ') or line.startswith('\t')):
-            code_lines.append(line.lstrip())
-            in_code = True
-        else:
-            if in_code:
-                result_lines.append(f"{'\n'.join(code_lines)}")
-                code_lines = []
-                in_code = False
-            result_lines.append(line)
-    if in_code:
-        result_lines.append(f"{'\n'.join(code_lines)}")
-    return '\n'.join(result_lines)
+    
+    # Keep markdown code blocks intact for Streamlit's native rendering
+    # Streamlit automatically handles ```language and ``` code blocks
+    # We just need to ensure proper formatting
+    
+    # Clean up any malformed code blocks and ensure proper spacing
+    text = _re.sub(r"```(\w*)\s*\n", r"```\1\n", text)  # Clean language specifier
+    text = _re.sub(r"```\s*$", "```", text, flags=_re.MULTILINE)  # Clean closing tags
+    
+    return text
 
 def add_citations(response):
     """Add citations from grounding metadata."""
@@ -118,15 +161,27 @@ with st.sidebar:
     # Show model routing information
     st.subheader("🤖 Smart Model Routing")
     st.markdown("""
+    **Gemini-2.5-Pro** is used for:
+    - Very complex mathematical problems
+    - Advanced algorithms and data structures
+    - Research-level technical analysis
+    - Long conversations (>3000 tokens)
+    - *Most capable with full tool support*
+    
     **Gemini-2.5-Flash** is used for:
-    - Complex mathematical problems
-    - Programming algorithms
+    - Programming and code analysis
     - Technical explanations
+    - Medium complexity problems
+    - *With code execution & search tools*
     
     **Gemini-2.5-Flash-Lite** is used for:
     - Simple questions
     - General conversations
     - Basic information requests
+    - Short conversations
+    - *With code execution & search tools*
+    
+    *Routing considers both content complexity and conversation length*
     """)
     
     # Show current conversation stats
@@ -191,11 +246,19 @@ if "messages" not in st.session_state:
 
 def get_or_create_chat_session(model_name: str):
     """Get or create a chat session, recreating if model changes to maintain context."""
-    config = types.GenerateContentConfig(
-        tools=[
+    # Different models support different tools
+    tools = []
+    
+    # Code execution and search tools support varies by model
+    if model_name in ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]:
+        tools = [
             types.Tool(code_execution=types.ToolCodeExecution),
             types.Tool(google_search=types.GoogleSearch())
-        ],
+        ]
+    # For experimental models or others, use no tools or adjust as needed
+    
+    config = types.GenerateContentConfig(
+        tools=tools,
         system_instruction="You are a helpful assistant. Use Google Search if needed to ground your answers and cite sources with [number] where relevant. Use Code execution tool only for code-related queries and complex math, do not show internal tool in response if it being used"
     )
     
@@ -282,14 +345,44 @@ if prompt:
                     # Normal send_message for same model or first message
                     response = chat_session.send_message(prompt)
                 
-            # Extract and process the response (similar to original streamlit_app.py)
+            # Extract and process the response with better handling for different response types
             if hasattr(response, "text"):
                 assistant_reply = response.text
             else:
-                # Fallback to string conversion if no text attribute
-                assistant_reply = str(response)
+                # Handle responses with multiple parts (text, code, etc.)
+                assistant_reply = ""
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            content_parts = []
+                            for part in candidate.content.parts:
+                                # Always include text parts
+                                if hasattr(part, 'text') and part.text:
+                                    content_parts.append(part.text)
+                                
+                                # Include executable code if present and relevant
+                                if hasattr(part, 'executable_code') and part.executable_code:
+                                    if hasattr(candidate, 'finish_reason') and candidate.finish_reason == "STOP":
+                                        content_parts.append(f"\n```\n{part.executable_code.code}\n```\n")
+                                
+                                # Include code execution results if present
+                                if hasattr(part, 'code_execution_result') and part.code_execution_result:
+                                    if hasattr(part.code_execution_result, 'output') and part.code_execution_result.output:
+                                        if hasattr(candidate, 'finish_reason') and candidate.finish_reason == "STOP":
+                                            content_parts.append(f"\n**Output:**\n```\n{part.code_execution_result.output}\n```\n")
+                            
+                            assistant_reply = "".join(content_parts)
+                        else:
+                            # Fallback to string conversion
+                            assistant_reply = str(candidate.content)
+                    else:
+                        assistant_reply = str(candidate)
+                else:
+                    # Final fallback
+                    assistant_reply = str(response)
             
-            if not assistant_reply:
+            if not assistant_reply or assistant_reply.strip() == "":
                 assistant_reply = "I apologize, but I couldn't generate a proper response. Please try again."
 
             # Process code blocks (keeping the enhanced processing from main.py)
@@ -309,7 +402,28 @@ if prompt:
             
             # Show model used and complexity score for debugging
             score = 1 + WEIGHT_HARD * len(HARD_PATTERN.findall(prompt)) + WEIGHT_MEDIUM * len(MEDIUM_PATTERN.findall(prompt)) + WEIGHT_SMALL * prompt.count('?')
-            model_info = f"Model: {selected_model} | Complexity Score: {score}"
+            
+            # Calculate token count for display
+            token_count = 0
+            try:
+                if st.session_state.messages:
+                    conversation_prompt = ""
+                    recent_history = st.session_state.messages[-MAX_CHAT_HISTORY:]
+                    for msg in recent_history:
+                        conversation_prompt += f"{msg['role']}: {msg['content']}\n"
+                    conversation_prompt += f"user: {prompt}\n"
+                    
+                    estimated_token = st.session_state.genai_client.models.count_tokens(
+                        model="gemini-2.5-flash-lite", 
+                        contents=conversation_prompt
+                    )
+                    token_count = estimated_token.total_tokens if hasattr(estimated_token, 'total_tokens') else int(estimated_token)
+                else:
+                    token_count = len(prompt) // 4
+            except:
+                token_count = len(prompt) // 4
+            
+            model_info = f"Model: {selected_model} | Complexity Score: {score} | Tokens: ~{token_count}"
             if model_switched:
                 model_info += " | ⚡ Model switched with context preserved"
             st.caption(model_info)
