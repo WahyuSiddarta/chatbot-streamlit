@@ -32,10 +32,32 @@ The chatbot intelligently routes queries based on complexity scoring:
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.8 or higher (or Miniconda/Anaconda)
 - Google AI API key (get one from [Google AI Studio](https://aistudio.google.com/))
 
-### Setup with Python Virtual Environment
+### Option 1: Automated Setup with Python Virtual Environment
+
+**Quick setup using the provided script:**
+
+```bash
+git clone https://github.com/WahyuSiddarta/chatbot-streamlit.git
+cd chatbot-streamlit
+./setup.sh
+```
+
+### Option 2: Automated Setup with Miniconda
+
+**Quick setup using Miniconda (recommended for isolated environments):**
+
+```bash
+git clone https://github.com/WahyuSiddarta/chatbot-streamlit.git
+cd chatbot-streamlit
+./setup-conda.sh
+```
+
+> **Note**: If you don't have Miniconda installed, download it from [https://docs.conda.io/en/latest/miniconda.html](https://docs.conda.io/en/latest/miniconda.html)
+
+### Option 3: Manual Setup with Python Virtual Environment
 
 1. **Clone the repository**
 
@@ -75,6 +97,53 @@ The chatbot intelligently routes queries based on complexity scoring:
    - Enter your Google AI API key in the sidebar
    - Start chatting!
 
+### Option 4: Manual Setup with Miniconda
+
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/WahyuSiddarta/chatbot-streamlit.git
+   cd chatbot-streamlit
+   ```
+
+2. **Create and activate conda environment**
+
+   ```bash
+   # Create conda environment with Python 3.9
+   conda create -n chatbot-streamlit python=3.9 -y
+
+   # Activate the environment
+   conda activate chatbot-streamlit
+   ```
+
+3. **Install dependencies**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Run the application**
+
+   ```bash
+   streamlit run streamlit_app.py
+   ```
+
+5. **Enter your Google AI API Key**
+
+   - Open the app in your browser (usually http://localhost:8501)
+   - Enter your Google AI API key in the sidebar
+   - Start chatting!
+
+6. **Environment management**
+
+   ```bash
+   # To deactivate the environment
+   conda deactivate
+
+   # To remove the environment (if needed)
+   conda env remove -n chatbot-streamlit
+   ```
+
 ## Usage
 
 1. **Start a conversation**: Type any message in the chat input
@@ -95,7 +164,9 @@ The chatbot intelligently routes queries based on complexity scoring:
 chatbot-streamlit/
 ├── streamlit_app.py      # Main Streamlit application
 ├── main.py              # FastAPI backend (reference implementation)
-├── requirements.txt     # Python dependencies
+├── requirements.txt     # Python dependencies (streamlit + google-genai)
+├── setup.sh             # Automated setup script (Python venv)
+├── setup-conda.sh       # Automated setup script (Miniconda)
 ├── README.md           # This file
 ├── .gitignore          # Git ignore rules
 └── LICENSE             # License file
