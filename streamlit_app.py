@@ -14,6 +14,21 @@ WEIGHT_SMALL = 2
 WEIGHT_MEDIUM = 3
 WEIGHT_HARD = 5
 
+# Temperature settings for different models
+TEMPERATURE_PRO = 0.2            # Low temperature for consistent, accurate responses
+TEMPERATURE_FLASH = 0.7          # Balanced temperature for medium creativity
+TEMPERATURE_LITE = 1.0           # High temperature for creative, varied responses
+
+# Top-p (nucleus sampling) settings for different models
+TOP_P_PRO = 0.8                  # More focused sampling for consistency
+TOP_P_FLASH = 0.9                # Balanced sampling
+TOP_P_LITE = 0.95                # Broader sampling for creativity
+
+# Top-k settings for different models
+TOP_K_PRO = 20                   # Smaller vocabulary for more focused responses
+TOP_K_FLASH = 40                 # Balanced vocabulary size
+TOP_K_LITE = 64                  # Larger vocabulary for more varied responses
+
 # Model routing keywords
 HARD_KEYWORDS = [
     r"derivative", r"integral",  r"big-?o", r"complexity", r"algorithm", r"algoritma",r"mathematical",
@@ -158,6 +173,12 @@ with st.sidebar:
     # 'help' provides a tooltip that appears when hovering over the button.
     reset_button = st.button("Reset Conversation", help="Clear all messages and start fresh")
     
+    # Add toggle for showing model thinking process
+    show_thinking = st.toggle("Show Model Thinking Process", value=True, help="Display model selection and reasoning steps")
+    
+    if show_thinking:
+        st.info("💭 **Thinking Mode**: You'll see the model's decision-making process including complexity analysis, token counting, and parameter selection.", icon="🧠")
+    
     # Show model routing information
     st.subheader("🤖 Smart Model Routing")
     st.markdown("""
@@ -166,20 +187,20 @@ with st.sidebar:
     - Advanced algorithms and data structures
     - Research-level technical analysis
     - Long conversations (>3000 tokens)
-    - *Most capable with full tool support*
+    - *Temperature: 0.2, Top-p: 0.8, Top-k: 20 (focused & consistent)*
     
     **Gemini-2.5-Flash** is used for:
     - Programming and code analysis
     - Technical explanations
     - Medium complexity problems
-    - *With code execution & search tools*
+    - *Temperature: 0.7, Top-p: 0.9, Top-k: 40 (balanced)*
     
     **Gemini-2.5-Flash-Lite** is used for:
     - Simple questions
     - General conversations
     - Basic information requests
     - Short conversations
-    - *With code execution & search tools*
+    - *Temperature: 1.0, Top-p: 0.95, Top-k: 64 (creative & varied)*
     
     *Routing considers both content complexity and conversation length*
     """)
@@ -257,8 +278,25 @@ def get_or_create_chat_session(model_name: str):
         ]
     # For experimental models or others, use no tools or adjust as needed
     
+    # Set generation parameters based on model for different creativity/consistency levels
+    if model_name == "gemini-2.5-pro":
+        temperature = TEMPERATURE_PRO      # 0.2 - More consistent, accurate responses
+        top_p = TOP_P_PRO                  # 0.8 - More focused sampling
+        top_k = TOP_K_PRO                  # 20 - Smaller vocabulary for consistency
+    elif model_name == "gemini-2.5-flash":
+        temperature = TEMPERATURE_FLASH    # 0.7 - Balanced creativity
+        top_p = TOP_P_FLASH                # 0.9 - Balanced sampling
+        top_k = TOP_K_FLASH                # 40 - Balanced vocabulary
+    else:  # gemini-2.5-flash-lite
+        temperature = TEMPERATURE_LITE     # 1.0 - More creative, varied responses
+        top_p = TOP_P_LITE                 # 0.95 - Broader sampling for creativity
+        top_k = TOP_K_LITE                 # 64 - Larger vocabulary for variety
+    
     config = types.GenerateContentConfig(
         tools=tools,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
         system_instruction="You are a helpful assistant. Use Google Search if needed to ground your answers and cite sources with [number] where relevant. Use Code execution tool only for code-related queries and complex math, do not show internal tool in response if it being used"
     )
     
@@ -336,15 +374,88 @@ if prompt:
         model_switched = st.session_state.current_model != selected_model
         
         with st.chat_message("assistant"):
-            if model_switched and len(st.session_state.messages) > 1:
-                with st.spinner(f"Switching to {selected_model} and preserving context..."):
-                    # Send message with conversation context for model switches
-                    response = send_message_with_context(chat_session, prompt, st.session_state.messages)
-            else:
-                with st.spinner(f"Thinking... (using {selected_model})"):
-                    # Normal send_message for same model or first message
-                    response = chat_session.send_message(prompt)
+            # Create a status container to show model thinking process (if enabled)
+            if show_thinking:
+                status_container = st.status("🤔 Model is thinking...", expanded=True)
+                response_placeholder = st.empty()
                 
+                with status_container:
+                    # Show model selection process
+                    st.write(f"🎯 **Model Selection**: Analyzing complexity...")
+                    complexity_score = 1 + WEIGHT_HARD * len(HARD_PATTERN.findall(prompt)) + WEIGHT_MEDIUM * len(MEDIUM_PATTERN.findall(prompt)) + WEIGHT_SMALL * prompt.count('?')
+                    st.write(f"📊 **Complexity Score**: {complexity_score}")
+                    
+                    # Show token estimation
+                    try:
+                        if st.session_state.messages:
+                            conversation_prompt = ""
+                            recent_history = st.session_state.messages[-MAX_CHAT_HISTORY:]
+                            for msg in recent_history:
+                                conversation_prompt += f"{msg['role']}: {msg['content']}\n"
+                            conversation_prompt += f"user: {prompt}\n"
+                            
+                            estimated_token = st.session_state.genai_client.models.count_tokens(
+                                model="gemini-2.5-flash-lite", 
+                                contents=conversation_prompt
+                            )
+                            token_count = estimated_token.total_tokens if hasattr(estimated_token, 'total_tokens') else int(estimated_token)
+                        else:
+                            token_count = len(prompt) // 4
+                        st.write(f"🔢 **Token Count**: ~{token_count}")
+                    except:
+                        token_count = len(prompt) // 4
+                        st.write(f"🔢 **Token Count**: ~{token_count} (estimated)")
+                    
+                    st.write(f"🤖 **Selected Model**: {selected_model}")
+                    
+                    # Show context preservation info if model switched
+                    if model_switched and len(st.session_state.messages) > 1:
+                        st.write(f"⚡ **Context Preservation**: Switching from {st.session_state.current_model} to {selected_model}")
+                        st.write("📝 **Status**: Injecting conversation history for seamless transition...")
+                    
+                    # Show model parameters
+                    if selected_model == "gemini-2.5-pro":
+                        st.write(f"⚙️ **Parameters**: Temperature=0.2, Top-p=0.8, Top-k=20 (focused & consistent)")
+                    elif selected_model == "gemini-2.5-flash":
+                        st.write(f"⚙️ **Parameters**: Temperature=0.7, Top-p=0.9, Top-k=40 (balanced)")
+                    else:
+                        st.write(f"⚙️ **Parameters**: Temperature=1.0, Top-p=0.95, Top-k=64 (creative & varied)")
+                    
+                    st.write("🧠 **Generating response**...")
+            else:
+                # Simple spinner when thinking display is disabled
+                response_placeholder = st.empty()
+                complexity_score = 1 + WEIGHT_HARD * len(HARD_PATTERN.findall(prompt)) + WEIGHT_MEDIUM * len(MEDIUM_PATTERN.findall(prompt)) + WEIGHT_SMALL * prompt.count('?')
+                
+                # Calculate token count
+                try:
+                    if st.session_state.messages:
+                        conversation_prompt = ""
+                        recent_history = st.session_state.messages[-MAX_CHAT_HISTORY:]
+                        for msg in recent_history:
+                            conversation_prompt += f"{msg['role']}: {msg['content']}\n"
+                        conversation_prompt += f"user: {prompt}\n"
+                        
+                        estimated_token = st.session_state.genai_client.models.count_tokens(
+                            model="gemini-2.5-flash-lite", 
+                            contents=conversation_prompt
+                        )
+                        token_count = estimated_token.total_tokens if hasattr(estimated_token, 'total_tokens') else int(estimated_token)
+                    else:
+                        token_count = len(prompt) // 4
+                except:
+                    token_count = len(prompt) // 4
+                
+                with st.spinner(f"Thinking... (using {selected_model})"):
+                    pass  # Just show the spinner
+            
+            # Generate the actual response
+            if model_switched and len(st.session_state.messages) > 1:
+                # Send message with conversation context for model switches
+                response = send_message_with_context(chat_session, prompt, st.session_state.messages)
+            else:
+                # Normal send_message for same model or first message
+                response = chat_session.send_message(prompt)
             # Extract and process the response with better handling for different response types
             if hasattr(response, "text"):
                 assistant_reply = response.text
@@ -397,36 +508,19 @@ if prompt:
                 # Skip citations if there's an error processing them
                 pass
             
-            # Display the response
-            st.markdown(assistant_reply)
+            # Update status to show completion (if thinking display is enabled)
+            if show_thinking:
+                status_container.update(label="✅ Response generated!", state="complete")
             
-            # Show model used and complexity score for debugging
-            score = 1 + WEIGHT_HARD * len(HARD_PATTERN.findall(prompt)) + WEIGHT_MEDIUM * len(MEDIUM_PATTERN.findall(prompt)) + WEIGHT_SMALL * prompt.count('?')
-            
-            # Calculate token count for display
-            token_count = 0
-            try:
-                if st.session_state.messages:
-                    conversation_prompt = ""
-                    recent_history = st.session_state.messages[-MAX_CHAT_HISTORY:]
-                    for msg in recent_history:
-                        conversation_prompt += f"{msg['role']}: {msg['content']}\n"
-                    conversation_prompt += f"user: {prompt}\n"
-                    
-                    estimated_token = st.session_state.genai_client.models.count_tokens(
-                        model="gemini-2.5-flash-lite", 
-                        contents=conversation_prompt
-                    )
-                    token_count = estimated_token.total_tokens if hasattr(estimated_token, 'total_tokens') else int(estimated_token)
-                else:
-                    token_count = len(prompt) // 4
-            except:
-                token_count = len(prompt) // 4
-            
-            model_info = f"Model: {selected_model} | Complexity Score: {score} | Tokens: ~{token_count}"
-            if model_switched:
-                model_info += " | ⚡ Model switched with context preserved"
-            st.caption(model_info)
+            # Display the final response
+            with response_placeholder.container():
+                st.markdown(assistant_reply)
+                
+                # Show final model info
+                model_info = f"Model: {selected_model} | Complexity Score: {complexity_score} | Tokens: ~{token_count}"
+                if model_switched:
+                    model_info += " | ⚡ Model switched with context preserved"
+                st.caption(model_info)
 
     except Exception as e:
         # If any error occurs, create an error message to display to the user.
